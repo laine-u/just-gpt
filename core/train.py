@@ -1,42 +1,28 @@
-import json
-import dataclasses
+import json, random, dataclasses
 from pathlib import Path
 
 import tiktoken
 import torch
+import numpy as np
 import torch.nn.functional as F
 
 from core.model.optimizer import AdamW
 from core.model.transformer import TransformerLM
 from core.model.scheduler import LRScheduler
+from core.misc.utils import generate_timestamp
 from core.misc.config import TrainerConfig
 from core.misc.record import Record
 
 
-def get_batch(tokens, batch_size, context_length, *, rng=None):
-    assert tokens.numel() >= context_length
-
-    starts = torch.randint(
-        tokens.numel() - context_length,
-        (batch_size,),
-        device=tokens.device,
-        generator=rng,
-    )
-    indices = starts[:, None] + torch.arange(context_length + 1, device=tokens.device)
-    chunks = tokens[indices]
-    return chunks[:, :-1], chunks[:, 1:]
-
-
-def lm_loss(logits, targets):
-    return F.cross_entropy(logits.reshape(-1, logits.shape[-1]), targets.reshape(-1))
-
 class Trainer:
-    def __init__(self, cfg: TrainerConfig, resume: bool = False):
+    def __init__(self, cfg: TrainerConfig, resume_from: str | None = None):
         self.cfg = cfg
-        self.resume = resume
-        self.record = Record()
 
-        self.reset_metrics("train")
+        self.resume_from = resume_from
+        if not resume_from:
+            self.uuid = generate_timestamp()
+
+        self.record = Record()
         self.setup()
 
     # ==================================================
@@ -52,12 +38,19 @@ class Trainer:
         print(f"==================================================")
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.tokenizer = tiktoken.get_encoding("gpt2")
+        self.setup_randomness()
         self.setup_datasets()
         self.setup_model()
         self.setup_scheduler()
 
         num_params = sum(p.numel() for p in self.model.parameters())
         print(f"Model Parameters: {num_params / 1e6:.2f}M")
+
+    def setup_randomness(self):
+        seed = self.cfg.seed
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
 
     def setup_datasets(self):
         if self.cfg.dataset == "antigone":
@@ -98,53 +91,70 @@ class Trainer:
     # Training
     # ==================================================
 
-    def train(self):
+    def train(self) -> bool:
+        """
+        Return:
+            did_train: bool
+        """
         print(f"==================================================")
         print(f"Training")
         print(f"==================================================")
         self.model.train()
 
-        rng = torch.Generator(device=self.valid_toks.device).manual_seed(self.cfg.seed)
-        if self.resume:
-            start = self.load_check_point(rng)
-        else:
-            start = 1
+        self.reset_metrics("train")
+        self.reset_metrics("eval")
+        self.best_step = 0
+        self.best_val_loss = float("inf")
+        self.train_rng = torch.Generator(device=self.train_toks.device).manual_seed(self.cfg.seed)
 
-        for step in range(start, self.cfg.num_train_steps + 1):
-            self.train_step(step, rng)
+        completed_step = 0
+        if self.resume_from:
+            next_step = self.load_check_point(self.resume_from)
+            completed_step = next_step - 1
+        else:
+            self.save_config()
+
+        if completed_step > self.cfg.num_train_steps:
+            raise ValueError("Checkpoint 超出训练总步数！")
+        if completed_step == self.cfg.num_train_steps:
+            print(f"训练已经完成，step = {completed_step}")
+            return False
+
+        for step in range(completed_step + 1, self.cfg.num_train_steps + 1):
+            self.train_step(step)
+            completed_step = step
 
             if self.check_step(step, self.cfg.log_every):
-                self.record.add_train_step(
-                    step=step,
-                    loss=self.training_loss / self.training_count,
-                    acc=self.training_correct / self.training_count,
-                    num_tokens=self.training_count,
-                    lr=self.optimizer.param_groups[0]["lr"]
-                )
-                self.reset_metrics("train")
+                self.record_metrics(step, "train")
 
             if self.check_step(step, self.cfg.eval_every):
-                self.evaluate_step(step)
+                _, is_best = self.evaluate_step(step)
+                if is_best:
+                    self.save_checkpoint(step, "best")
 
             if self.check_step(step, self.cfg.checkpoint_every):
-                self.save_checkpoint(step, rng)
-                self.save_checkpoint(step, rng, "latest")
+                self.save_record()
+                self.save_checkpoint(step)
+                self.save_checkpoint(step, "latest")
 
         if self.training_count > 0:
-            self.record.add_train_step(
-                step=step,
-                loss=self.training_loss / self.training_count,
-                acc=self.training_correct / self.training_count,
-                num_tokens=self.training_count,
-                lr=self.optimizer.param_groups[0]["lr"]
-            )
+            self.record_metrics(completed_step, "train")
 
-    def train_step(self, step, rng=None):
+        if not self.check_step(completed_step, self.cfg.eval_every):
+            _, is_best = self.evaluate_step(completed_step)
+            if is_best:
+                self.save_checkpoint(completed_step, "best")
+                self.save_checkpoint(completed_step, "latest")
+
+        self.save_checkpoint(completed_step, "latest")
+        return True
+
+    def train_step(self, step):
         inputs, targets = get_batch(
             self.train_toks,
             self.cfg.batch_size,
             self.cfg.context_length,
-            rng=rng
+            rng=self.train_rng,
         )
         inputs, targets = inputs.to(self.device), targets.to(self.device)
 
@@ -160,16 +170,14 @@ class Trainer:
     @torch.no_grad
     def evaluate_step(self, step):
         self.model.eval()
-        self.reset_metrics("eval")
-
-        rng = torch.Generator(device=self.valid_toks.device).manual_seed(self.cfg.seed)
+        eval_rng = torch.Generator(device=self.valid_toks.device).manual_seed(self.cfg.seed)
 
         for _ in range(self.cfg.num_eval_steps):
             inputs, targets = get_batch(
                 self.valid_toks,
                 self.cfg.batch_size,
                 self.cfg.context_length,
-                rng=rng
+                rng=eval_rng
             )
             inputs, targets = inputs.to(self.device), targets.to(self.device)
 
@@ -177,33 +185,58 @@ class Trainer:
             loss = lm_loss(outputs, targets)
             self.update_metrics("eval", loss, outputs, targets)
 
-        self.record.add_eval_step(
-            step=step,
-            loss=self.validating_loss / self.validating_count,
-            acc=self.validating_correct / self.validating_count,
-            num_tokens=self.validating_count
-        )
+        val_loss, _ = self.record_metrics(step, "eval")
+        is_best = val_loss < self.best_val_loss
+        if is_best:
+            self.best_val_loss = val_loss
+            self.best_step = step
+
         self.model.train()
+        return val_loss, is_best
+
+    def record_metrics(self, step, mode):
+        if mode == "train":
+            loss = self.training_loss / self.training_count
+            acc = self.training_correct / self.training_count
+            self.record.add_train_step(
+                step=step, loss=loss, acc=acc, num_tokens=self.training_count,
+                lr=self.optimizer.param_groups[0]["lr"]
+            )
+        elif mode == "eval":
+            loss = self.validating_loss / self.validating_count
+            acc = self.validating_correct / self.validating_count
+            self.record.add_eval_step(
+                step=step, loss=loss, acc=acc,num_tokens=self.validating_count
+            )
+        else:
+            raise ValueError(f"Unknown metrics mode: {mode}")
+
+        self.reset_metrics(mode)
+        return loss, acc
 
     def reset_metrics(self, mode):
         if mode == "train":
             self.training_loss = 0.0
             self.training_correct = 0
             self.training_count = 0
-        else:
+        elif mode == "eval":
             self.validating_loss = 0.0
             self.validating_correct = 0
             self.validating_count = 0
+        else:
+            raise ValueError(f"Unknown metrics mode: {mode}")
 
     def update_metrics(self, mode, loss, logits, targets):
         if mode == "train":
             self.training_loss += loss.item() * targets.numel()
             self.training_correct += (logits.argmax(-1) == targets).sum().item()
             self.training_count += targets.numel()
-        else:
+        elif mode == "eval":
             self.validating_loss += loss.item() * targets.numel()
             self.validating_correct += (logits.argmax(-1) == targets).sum().item()
             self.validating_count += targets.numel()
+        else:
+            raise ValueError(f"Unknown metrics mode: {mode}")
 
     @staticmethod
     def check_step(step, every):
@@ -217,22 +250,29 @@ class Trainer:
         print(f"==================================================")
         print(f"Checking out")
         print(f"==================================================")
-        base_dir = self.get_base_dir()
+        self.save_record()
+        self.generate()
 
+    def get_base_dir(self):
+        if self.resume_from:
+            base_dir = Path(self.resume_from)
+        else:
+            base_dir = Path(f"results/{self.cfg.name}") / self.uuid
+            base_dir.mkdir(parents=True, exist_ok=True)
+        return base_dir
+
+    def save_config(self):
+        base_dir = self.get_base_dir()
         config_path = base_dir / "config.json"
         with open(config_path, "w") as f:
             json.dump(dataclasses.asdict(self.cfg), f)
 
+    def save_record(self):
+        base_dir = self.get_base_dir()
         record_path = base_dir / "records.json"
         self.record.save(record_path)
-        self.generate()
 
-    def get_base_dir(self):
-        base_dir = Path(f"results/{self.cfg.name}")
-        base_dir.mkdir(parents=True, exist_ok=True)
-        return base_dir
-
-    def save_checkpoint(self, step, rng, name=None):
+    def save_checkpoint(self, step, name=None):
         base_dir = self.get_base_dir()
         if name is None:
             name = f"{step}"
@@ -241,14 +281,26 @@ class Trainer:
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({
             "step": step,
+            "best_step": self.best_step,
+            "best_val_loss": self.best_val_loss,
+            "train_metrics": {
+                "loss_sum": self.training_loss,
+                "correct": self.training_correct,
+                "count": self.training_count,
+            },
+            "records": {
+                "train": self.record.train_steps,
+                "eval": self.record.eval_steps,
+            },
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
-            "rng": rng.get_state(),
+            "rng": self.train_rng.get_state(),
+
             "config": dataclasses.asdict(self.cfg),
         }, path)
 
-    def load_check_point(self, rng):
-        base_dir = self.get_base_dir()
+    def load_check_point(self, resume_from):
+        base_dir = Path(resume_from)
 
         path = base_dir / "checkpoints" / "latest.pt"
         data = torch.load(
@@ -256,10 +308,19 @@ class Trainer:
             map_location=self.device,
             weights_only=True
         )
+        self.best_step = data["best_step"]
+        self.best_val_loss = data["best_val_loss"]
+
+        self.training_loss = data["train_metrics"]["loss_sum"]
+        self.training_correct = data["train_metrics"]["correct"]
+        self.training_count = data["train_metrics"]["count"]
+        self.record.train_steps = data["records"]["train"]
+        self.record.eval_steps = data["records"]["eval"]
+
         self.model.load_state_dict(data["model"])
         self.optimizer.load_state_dict(data["optimizer"])
-        rng.set_state(data["rng"])
-        return data["step"]
+        self.train_rng.set_state(data["rng"].cpu())
+        return data["step"] + 1
 
     @torch.no_grad
     def generate(self):
@@ -279,3 +340,20 @@ class Trainer:
                 break
 
         print(repr(self.tokenizer.decode(tokens[0].tolist())))
+
+
+def get_batch(tokens, batch_size, context_length, *, rng=None):
+    assert tokens.numel() >= context_length + 1
+
+    starts = torch.randint(
+        tokens.numel() - context_length,
+        (batch_size,),
+        device=tokens.device,
+        generator=rng,
+    )
+    indices = starts[:, None] + torch.arange(context_length + 1, device=tokens.device)
+    chunks = tokens[indices]
+    return chunks[:, :-1], chunks[:, 1:]
+
+def lm_loss(logits, targets):
+    return F.cross_entropy(logits.reshape(-1, logits.shape[-1]), targets.reshape(-1))

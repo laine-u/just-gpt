@@ -54,5 +54,6 @@ def run_exps(exps):
 
 def run_exp(exp: TrainerConfig):
     trainer = Trainer(exp)
-    trainer.train()
-    trainer.check_plz()
+    did_train = trainer.train()
+    if did_train:
+        trainer.check_plz()

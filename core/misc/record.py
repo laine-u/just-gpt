@@ -1,4 +1,7 @@
+import os
 import json
+
+from pathlib import Path
 
 
 class Record:
@@ -26,12 +29,16 @@ class Record:
         print(f"[eval] {self.eval_steps[-1]}")
 
     def save(self, path):
+        path = Path(path)
+        tmp_path = path.with_name(path.name + ".tmp")
+
         data = {
             "train": self.train_steps,
             "eval": self.eval_steps
         }
 
-        with open(path, "w") as f:
-            json.dump(data, f)
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
 
+        os.replace(tmp_path, path)
         print(f"Records saved to {path}")
