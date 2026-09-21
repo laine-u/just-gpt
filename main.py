@@ -3,9 +3,12 @@ from experiments import *
 
 def main():
     cfg = build_cfg(
-        d_model=64,
-        num_heads=4,
-        d_ff=128,
+        name="TinyStories",
+        dataset="tinystories",
+        data_dir="data/processed/tinystories-gpt2",
+        d_model=256,
+        num_heads=8,
+        d_ff=768,
     )
     run_exp(cfg)
 

@@ -10,8 +10,8 @@ class LRScheduler:
         self.optimizer = optimizer
         self.base_lrs = [g["lr"] for g in optimizer.param_groups]
 
-        tps = cfg.batch_size * cfg.context_length
-        self.decay_steps = math.ceil(cfg.decay_tokens / tps) if cfg.decay_tokens else 0
+        tokens_per_step = cfg.batch_size * cfg.context_length
+        self.decay_steps = math.ceil(cfg.decay_tokens / tokens_per_step) if cfg.decay_tokens else 0
         self.decay_start = cfg.num_train_steps - self.decay_steps
 
         if cfg.schedule == "wsd" and self.decay_steps <=0:

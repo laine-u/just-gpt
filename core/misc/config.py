@@ -5,6 +5,7 @@ import dataclasses
 class TrainerConfig:
     name: str = "Antigone"
     dataset: str = "antigone"
+    data_dir: str = "data/processed/tinystories-gpt2-debug"
 
     # ---------- Transformer ----------
     num_layers: int = 2
@@ -20,7 +21,7 @@ class TrainerConfig:
     eps: float = 1e-8
 
     # ---------- LR Scheduler ----------
-    schedule: str = "cosine"
+    schedule: str = "wsd"
     min_lr_ratio: float = 0.1
     warmup_steps: int = 50
     decay_tokens: int = 0

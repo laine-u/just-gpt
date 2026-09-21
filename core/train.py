@@ -12,6 +12,7 @@ from core.model.scheduler import LRScheduler
 from core.misc.utils import generate_timestamp
 from core.misc.config import TrainerConfig
 from core.misc.record import Record
+from core.data.dataset import load_tokens, get_batch
 
 
 class Trainer:
@@ -51,18 +52,31 @@ class Trainer:
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
+        print(f"Setting up seeds to {seed}")
 
     def setup_datasets(self):
-        if self.cfg.dataset == "antigone":
-            text = Path("data/Antigone.txt").read_text(encoding="utf-8")
-            split = int(len(text) * 0.9)
-            train_text = text[:split]
-            valid_text = text[split:]
+        data_dir = Path(self.cfg.data_dir)
 
-            self.train_toks = torch.tensor(self.tokenizer.encode(train_text), dtype=torch.long)
-            self.valid_toks = torch.tensor(self.tokenizer.encode(valid_text), dtype=torch.long)
-        else:
-            raise ValueError(f"WoW, could've fooled me, you {self.cfg.dataset}.")
+        with (data_dir / "meta.json").open(encoding="utf-8") as f:
+            meta = json.load(f)
+
+        if (
+            meta["tokenizer"] != self.tokenizer.name or
+            meta["vocab_size"] != self.tokenizer.n_vocab or
+            meta["eot_token"] != self.tokenizer.eot_token
+        ):
+            raise ValueError(f"Token files and model tokenizer do not match")
+
+        def load_split(name):
+            info = meta["splits"][name]
+            return load_tokens(
+                path=data_dir / info["file"],
+                dtype=meta["dtype"],
+                expected_tokens=info["num_tokens"]
+            )
+
+        self.train_toks = load_split("train")
+        self.valid_toks = load_split("valid")
 
     def setup_model(self):
         self.model = TransformerLM(
@@ -105,7 +119,7 @@ class Trainer:
         self.reset_metrics("eval")
         self.best_step = 0
         self.best_val_loss = float("inf")
-        self.train_rng = torch.Generator(device=self.train_toks.device).manual_seed(self.cfg.seed)
+        self.train_rng = torch.Generator(device="cpu").manual_seed(self.cfg.seed)
 
         completed_step = 0
         if self.resume_from:
@@ -170,7 +184,7 @@ class Trainer:
     @torch.no_grad
     def evaluate_step(self, step):
         self.model.eval()
-        eval_rng = torch.Generator(device=self.valid_toks.device).manual_seed(self.cfg.seed)
+        eval_rng = torch.Generator(device="cpu").manual_seed(self.cfg.seed)
 
         for _ in range(self.cfg.num_eval_steps):
             inputs, targets = get_batch(
@@ -341,19 +355,6 @@ class Trainer:
 
         print(repr(self.tokenizer.decode(tokens[0].tolist())))
 
-
-def get_batch(tokens, batch_size, context_length, *, rng=None):
-    assert tokens.numel() >= context_length + 1
-
-    starts = torch.randint(
-        tokens.numel() - context_length,
-        (batch_size,),
-        device=tokens.device,
-        generator=rng,
-    )
-    indices = starts[:, None] + torch.arange(context_length + 1, device=tokens.device)
-    chunks = tokens[indices]
-    return chunks[:, :-1], chunks[:, 1:]
 
 def lm_loss(logits, targets):
     return F.cross_entropy(logits.reshape(-1, logits.shape[-1]), targets.reshape(-1))
