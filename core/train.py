@@ -12,7 +12,8 @@ from core.model.scheduler import LRScheduler
 from core.misc.utils import generate_timestamp
 from core.misc.config import TrainerConfig
 from core.misc.record import Record
-from core.data.dataset import load_tokens, get_batch
+from core.data.dataset import load_tokens, get_random_batch, get_batch
+from core.data.sampler import WindowSampler
 
 
 class Trainer:
@@ -44,6 +45,7 @@ class Trainer:
         self.setup_model()
         self.setup_scheduler()
 
+        print(json.dumps(dataclasses.asdict(self.cfg), indent=2))
         num_params = sum(p.numel() for p in self.model.parameters())
         print(f"Model Parameters: {num_params / 1e6:.2f}M")
 
@@ -77,6 +79,9 @@ class Trainer:
 
         self.train_toks = load_split("train")
         self.valid_toks = load_split("valid")
+
+        num_windows = (len(self.train_toks) - 1) // self.cfg.context_length
+        self.sampler = WindowSampler(num_windows, self.cfg.batch_size, self.cfg.seed)
 
     def setup_model(self):
         self.model = TransformerLM(
@@ -119,7 +124,6 @@ class Trainer:
         self.reset_metrics("eval")
         self.best_step = 0
         self.best_val_loss = float("inf")
-        self.train_rng = torch.Generator(device="cpu").manual_seed(self.cfg.seed)
 
         completed_step = 0
         if self.resume_from:
@@ -129,10 +133,12 @@ class Trainer:
             self.save_config()
 
         if completed_step > self.cfg.num_train_steps:
-            raise ValueError("Checkpoint 超出训练总步数！")
+            raise ValueError("Checkpoint exceeds total training steps")
         if completed_step == self.cfg.num_train_steps:
-            print(f"训练已经完成，step = {completed_step}")
+            print(f"Training was already completed, step = {completed_step}")
             return False
+
+        print(f"Training steps: {self.cfg.num_train_steps}, starts from step {completed_step + 1}")
 
         for step in range(completed_step + 1, self.cfg.num_train_steps + 1):
             self.train_step(step)
@@ -164,11 +170,11 @@ class Trainer:
         return True
 
     def train_step(self, step):
+        window_ids = self.sampler.next_batch()
         inputs, targets = get_batch(
             self.train_toks,
-            self.cfg.batch_size,
+            window_ids,
             self.cfg.context_length,
-            rng=self.train_rng,
         )
         inputs, targets = inputs.to(self.device), targets.to(self.device)
 
@@ -187,7 +193,7 @@ class Trainer:
         eval_rng = torch.Generator(device="cpu").manual_seed(self.cfg.seed)
 
         for _ in range(self.cfg.num_eval_steps):
-            inputs, targets = get_batch(
+            inputs, targets = get_random_batch(
                 self.valid_toks,
                 self.cfg.batch_size,
                 self.cfg.context_length,
@@ -293,6 +299,7 @@ class Trainer:
 
         path = base_dir / "checkpoints" / f"{name}.pt"
         path.parent.mkdir(parents=True, exist_ok=True)
+
         torch.save({
             "step": step,
             "best_step": self.best_step,
@@ -306,10 +313,9 @@ class Trainer:
                 "train": self.record.train_steps,
                 "eval": self.record.eval_steps,
             },
+            "sampler": self.sampler.state_dict(),
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
-            "rng": self.train_rng.get_state(),
-
             "config": dataclasses.asdict(self.cfg),
         }, path)
 
@@ -333,7 +339,7 @@ class Trainer:
 
         self.model.load_state_dict(data["model"])
         self.optimizer.load_state_dict(data["optimizer"])
-        self.train_rng.set_state(data["rng"].cpu())
+        self.sampler.load_state_dict(data["sampler"])
         return data["step"] + 1
 
     @torch.no_grad

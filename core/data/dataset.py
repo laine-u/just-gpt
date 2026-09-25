@@ -24,7 +24,7 @@ def load_tokens(path: Path, dtype: str, expected_tokens: int) -> np.memmap:
     )
 
 
-def get_batch(tokens, batch_size, context_length, *, rng):
+def get_random_batch(tokens, batch_size, context_length, *, rng):
     if batch_size <= 0 or context_length <= 0:
         raise ValueError(f"Batch size and context length muse be posivive")
 
@@ -41,6 +41,22 @@ def get_batch(tokens, batch_size, context_length, *, rng):
     chunks = np.stack([
         tokens[start: start + context_length + 1]
         for start in starts
+    ]).astype(np.int64)
+
+    chunks = torch.from_numpy(chunks)
+    return chunks[:, :-1], chunks[:, 1:]
+
+
+def get_batch(tokens, window_ids, context_length):
+    num_windows = (len(tokens) - 1) // context_length
+
+    for window_id in window_ids:
+        if not 0 <= window_id < num_windows:
+            raise IndexError(f"Window index {window_id} out of range [0, {num_windows}]")
+
+    chunks = np.stack([
+        tokens[window_id * context_length : window_id * context_length + context_length + 1]
+        for window_id in window_ids
     ]).astype(np.int64)
 
     chunks = torch.from_numpy(chunks)
