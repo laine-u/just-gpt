@@ -1,6 +1,7 @@
 import math
 
-from core.train import TrainerConfig, Trainer
+from core.train import Trainer
+from core.misc.config import TrainerConfig
 
 
 def build_cfg(
@@ -12,29 +13,52 @@ def build_cfg(
     decay_ratio=0.15,
     **overrides,
 ):
+    if token_budget <= 0 or batch_size <= 0 or context_length <= 0:
+        raise ValueError(f"token_budget, batch_size and context_length must be positive")
+
+    if not 0 <= warmup_ratio < 1:
+        raise ValueError("warmup_ratio must be in [0, 1)")
+
+    if not 0 <= decay_ratio <= 1:
+        raise ValueError(f"decay ratio must be in [0, 1]")
+
     tokens_per_step = batch_size * context_length
     steps = math.ceil(token_budget / tokens_per_step)
 
-    warmup_steps = max(25, round(warmup_ratio * steps))
+    warmup_steps = round(warmup_ratio * steps)
     decay_tokens = round(decay_ratio * token_budget)
 
-    base = TrainerConfig(
+    if warmup_steps >= steps:
+        raise ValueError(f"warmup_steps must be smaller than training steps")
+
+    cfg = TrainerConfig(
+        batch_size=batch_size,
+        context_length=context_length,
         num_train_steps=steps,
         warmup_steps=warmup_steps,
         decay_tokens=decay_tokens,
         **overrides
     )
 
-    return base
+    if cfg.schedule == "wsd":
+        decay_steps = math.ceil(decay_tokens / tokens_per_step)
+        if decay_steps <= 0:
+            raise ValueError(f"WSD requires a positive decay duration")
+        if warmup_steps + decay_steps > steps:
+            raise ValueError(f"WSD warmup and decay phases overlap")
 
+    return cfg
+
+def run_exp(
+    exp: TrainerConfig,
+    resume_from: str | None = None,
+):
+    trainer = Trainer(exp, resume_from=resume_from)
+
+    did_train = trainer.train()
+    if did_train:
+        trainer.check_plz()
 
 def run_exps(exps):
     for exp in exps:
         run_exp(exp)
-
-
-def run_exp(exp: TrainerConfig):
-    trainer = Trainer(exp)
-    did_train = trainer.train()
-    if did_train:
-        trainer.check_plz()

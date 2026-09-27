@@ -1,19 +1,15 @@
 import json, random, dataclasses
 from pathlib import Path
+from tqdm import tqdm
 
 import tiktoken
 import torch
 import numpy as np
 import torch.nn.functional as F
 
-from core.model.optimizer import AdamW
-from core.model.transformer import TransformerLM
-from core.model.scheduler import LRScheduler
-from core.misc.utils import generate_timestamp
-from core.misc.config import TrainerConfig
-from core.misc.record import Record
-from core.data.dataset import load_tokens, get_random_batch, get_batch
-from core.data.sampler import WindowSampler
+from .model import AdamW, TransformerLM, LRScheduler
+from .data import load_tokens, get_batch, get_random_batch, WindowSampler
+from .misc import Record, TrainerConfig, generate_timestamp
 
 
 class Trainer:
@@ -46,8 +42,10 @@ class Trainer:
         self.setup_scheduler()
 
         print(json.dumps(dataclasses.asdict(self.cfg), indent=2))
-        num_params = sum(p.numel() for p in self.model.parameters())
-        print(f"Model Parameters: {num_params / 1e6:.2f}M")
+        counts = self._count_parametes(self.model)
+        print(f"Total parameters: {counts['total'] / 1e6:.2f}M")
+        print(f"  - Body:  {counts['body'] / 1e6:.2f}M")
+        print(f"  - Vocab: {counts['vocab'] / 1e6:.2f}M")
 
     def setup_randomness(self):
         seed = self.cfg.seed
@@ -106,6 +104,17 @@ class Trainer:
     def setup_scheduler(self):
         self.scheduler = LRScheduler(self.optimizer, self.cfg)
 
+    @staticmethod
+    def _count_parametes(model):
+        total = sum(p.numel() for p in model.parameters())
+        body = sum(p.numel() for p in model.transformer_blocks.parameters())
+        body += sum(p.numel() for p in model.ln_final.parameters())
+        return {
+            "total": total,
+            "body": body,
+            "vocab": total - body
+        }
+
     # ==================================================
     # Training
     # ==================================================
@@ -131,6 +140,7 @@ class Trainer:
             completed_step = next_step - 1
         else:
             self.save_config()
+            self.save_run_info()
 
         if completed_step > self.cfg.num_train_steps:
             raise ValueError("Checkpoint exceeds total training steps")
@@ -140,33 +150,52 @@ class Trainer:
 
         print(f"Training steps: {self.cfg.num_train_steps}, starts from step {completed_step + 1}")
 
-        for step in range(completed_step + 1, self.cfg.num_train_steps + 1):
-            self.train_step(step)
-            completed_step = step
+        with tqdm(
+            total=self.cfg.num_train_steps,
+            initial=completed_step,
+            desc="Train",
+            unit="step",
+            dynamic_ncols=True,
+            mininterval=0.5
+        ) as progress:
+            self.update_progress(progress)
 
-            if self.check_step(step, self.cfg.log_every):
-                self.record_metrics(step, "train")
+            for step in range(completed_step + 1, self.cfg.num_train_steps + 1):
+                self.train_step(step)
+                completed_step = step
 
-            if self.check_step(step, self.cfg.eval_every):
-                _, is_best = self.evaluate_step(step)
+                if self.check_step(step, self.cfg.log_every):
+                    self.record_metrics(step, "train")
+                    self.update_progress(progress)
+
+                progress.update(1)
+
+                if self.check_step(step, self.cfg.eval_every):
+                    progress.set_description("Train / eval")
+                    _, is_best = self.evaluate_step(step)
+                    if is_best:
+                        self.save_checkpoint(step, "best")
+                    progress.set_description("Train")
+
+                if self.check_step(step, self.cfg.checkpoint_every):
+                    self.save_record()
+                    self.save_checkpoint(step)
+                    self.save_checkpoint(step, "latest")
+
+            if self.training_count > 0:
+                self.record_metrics(completed_step, "train")
+                self.update_progress(progress)
+
+            if not self.check_step(completed_step, self.cfg.eval_every):
+                progress.set_description("Train / eval")
+                _, is_best = self.evaluate_step(completed_step)
                 if is_best:
-                    self.save_checkpoint(step, "best")
+                    self.save_checkpoint(completed_step, "best")
+                progress.set_description("Train")
 
-            if self.check_step(step, self.cfg.checkpoint_every):
-                self.save_record()
-                self.save_checkpoint(step)
-                self.save_checkpoint(step, "latest")
+            self.save_checkpoint(completed_step, "latest")
+            progress.refresh()
 
-        if self.training_count > 0:
-            self.record_metrics(completed_step, "train")
-
-        if not self.check_step(completed_step, self.cfg.eval_every):
-            _, is_best = self.evaluate_step(completed_step)
-            if is_best:
-                self.save_checkpoint(completed_step, "best")
-                self.save_checkpoint(completed_step, "latest")
-
-        self.save_checkpoint(completed_step, "latest")
         return True
 
     def train_step(self, step):
@@ -190,7 +219,7 @@ class Trainer:
     @torch.no_grad
     def evaluate_step(self, step):
         self.model.eval()
-        eval_rng = torch.Generator(device="cpu").manual_seed(self.cfg.seed)
+        eval_rng = torch.Generator(device="cpu").manual_seed(self.cfg.eval_seed)
 
         for _ in range(self.cfg.num_eval_steps):
             inputs, targets = get_random_batch(
@@ -205,13 +234,20 @@ class Trainer:
             loss = lm_loss(outputs, targets)
             self.update_metrics("eval", loss, outputs, targets)
 
-        val_loss, _ = self.record_metrics(step, "eval")
+        val_loss, val_acc = self.record_metrics(step, "eval")
         is_best = val_loss < self.best_val_loss
         if is_best:
             self.best_val_loss = val_loss
             self.best_step = step
 
         self.model.train()
+
+        tqdm.write(
+            f"[eval] step={step} "
+            f"loss={val_loss:.4f} "
+            f"acc={val_acc:.2%} "
+            f"best={is_best}"
+        )
         return val_loss, is_best
 
     def record_metrics(self, step, mode):
@@ -262,6 +298,18 @@ class Trainer:
     def check_step(step, every):
         return (every > 0) and (step % every == 0)
 
+    def update_progress(self, progress):
+        if not self.record.train_steps:
+            return
+
+        metrics = self.record.train_steps[-1]
+        progress.set_postfix(
+            loss=f"{metrics['loss']:.4f}",
+            acc=f"{metrics['acc']:.2%}",
+            lr=f"{metrics['lr']:.2e}",
+            refresh=False,
+        )
+
     # ==================================================
     # Check
     # ==================================================
@@ -283,9 +331,24 @@ class Trainer:
 
     def save_config(self):
         base_dir = self.get_base_dir()
-        config_path = base_dir / "config.json"
-        with open(config_path, "w") as f:
+        path = base_dir / "config.json"
+        with open(path, "w") as f:
             json.dump(dataclasses.asdict(self.cfg), f)
+
+    def save_run_info(self):
+        base_dir = self.get_base_dir()
+        path = base_dir / "run_info.json"
+
+        info = {
+            "parameters": self._count_parametes(self.model),
+            "parameter_count_def": {
+                "body": "transformer_blocks + ln_final",
+                "vocab": "tok_emb + lm_head",
+            }
+        }
+
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(info, f, ensure_ascii=False, indent=2)
 
     def save_record(self):
         base_dir = self.get_base_dir()

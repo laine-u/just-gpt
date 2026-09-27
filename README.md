@@ -34,7 +34,7 @@ uv run preprocessing.py \
 ---
 预处理 OWT
 
-```
+```bash
 uv run preprocessing.py \
   --dataset owt \
   --raw-dir data/raw/openwebtext/plain_text \
@@ -52,3 +52,7 @@ uv run preprocessing.py \
 ```
 uv run main.py
 ```
+
+## 3. 实验
+
+详见实验记录 [[experiments/README.md]]。

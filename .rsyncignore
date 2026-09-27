@@ -9,6 +9,7 @@
 /results/
 /runs/
 /wandb/
+/output/
 
 # python
 __pycache__/

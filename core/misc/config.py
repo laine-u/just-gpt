@@ -37,6 +37,7 @@ class TrainerConfig:
     eval_every: int = 500
     checkpoint_every: int = 1000
     seed: int = 42
+    eval_seed: int = 42
 
     def __post_init__(self):
         assert self.d_model % self.num_heads == 0

@@ -16,3 +16,6 @@ results/
 .pytest_cache/
 .vscode
 .ruff_cache
+
+# MacOS
+.DS_Store

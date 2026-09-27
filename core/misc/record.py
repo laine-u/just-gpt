@@ -17,7 +17,6 @@ class Record:
             "num_tokens": num_tokens,
             "lr": lr
         })
-        print(f"[train] {self.train_steps[-1]}")
 
     def add_eval_step(self, step, loss, acc, num_tokens):
         self.eval_steps.append({
@@ -26,7 +25,6 @@ class Record:
             "acc": acc,
             "num_tokens": num_tokens,
         })
-        print(f"[eval] {self.eval_steps[-1]}")
 
     def save(self, path):
         path = Path(path)
@@ -41,4 +39,3 @@ class Record:
             json.dump(data, f, ensure_ascii=False)
 
         os.replace(tmp_path, path)
-        print(f"Records saved to {path}")
