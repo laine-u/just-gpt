@@ -1,4 +1,4 @@
-from .exp import build_cfg, run_exps
+from .exp import build_cfg, run_configs
 
 
 def build_scaling_configs(
@@ -13,7 +13,8 @@ def build_scaling_configs(
         "M": { "num_layers": 6, "d_model": 256, "num_heads": 8, "d_ff": 768,},
         "L": { "num_layers": 8, "d_model": 384, "num_heads": 12, "d_ff": 1152,},
     }
-    token_budgets = (10_000_000, 30_000_000, 100_000_000,)
+
+    token_budgets = (10_000_000, 30_000_000, 100_000_000, )
     seeds = (42, 43, 44)
 
     configs = []
@@ -63,7 +64,7 @@ def run_scaling_setup():
             f"context={cfg.context_length}",
         )
 
-    run_exps(configs)
+    run_configs(configs)
 
 
 if __name__ == "__main__":

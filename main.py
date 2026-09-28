@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from experiments import build_cfg, run_exp
+from experiments import build_cfg, run_config
 from core.misc.utils import positive_int, positive_float
 
 
@@ -68,7 +68,7 @@ def main():
     except ValueError as exc:
         parser.error(str(exc))
 
-    run_exp(cfg, resume_from=resume_from)
+    run_config(cfg, resume_from=resume_from)
 
 
 

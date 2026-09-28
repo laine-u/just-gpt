@@ -1,8 +1,8 @@
-from .exp import build_cfg, run_exp, run_exps
+from .exp import build_cfg, run_config, run_configs
 
 
 __all__ = [
     "build_cfg",
-    "run_exp",
-    "run_exps",
+    "run_config",
+    "run_configs",
 ]

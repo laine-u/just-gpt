@@ -1,7 +1,8 @@
 import math
+from pathlib import Path
 
 from core.train import Trainer
-from core.misc.config import TrainerConfig
+from core.misc import *
 
 
 def build_cfg(
@@ -49,16 +50,92 @@ def build_cfg(
 
     return cfg
 
-def run_exp(
-    exp: TrainerConfig,
+
+def run_config(
+    cfg: TrainerConfig,
     resume_from: str | None = None,
+    force_new: bool = False,
 ):
-    trainer = Trainer(exp, resume_from=resume_from)
+    action, run_dir, checkpoint = resolve_run(cfg, resume_from, force_new)
 
-    did_train = trainer.train()
-    if did_train:
-        trainer.check_plz()
+    if action == "skip":
+        print(f"[skip] {cfg.name}: completed in {run_dir}")
+        return
+    elif action == "resume":
+        print(f"[resume] {cfg.name}: {checkpoint}")
+    else:
+        print(f"[new] {cfg.name}")
 
-def run_exps(exps):
+    trainer = Trainer(
+        cfg=cfg,
+        resume_from=run_dir,
+        resume_checkpoint=checkpoint
+    )
+    trainer.train()
+    trainer.check_plz()
+
+
+def run_configs(exps):
     for exp in exps:
-        run_exp(exp)
+        run_config(exp)
+
+
+def resolve_run(cfg: TrainerConfig, resume_from=None, force_new=False):
+    """
+    Decide if an experiment should skip, resume or new.
+    """
+    if force_new and resume_from is not None:
+        raise ValueError(f"force_new and resume_from cannot be used together")
+
+    if force_new:
+        return "new", None, None
+
+    if resume_from is not None:
+        run_dirs = [Path(resume_from)]
+    else:
+        root = Path("results") / cfg.name
+        run_dirs = sorted(
+            path for path in root.glob("*") if path.is_dir()
+        )
+
+    matching_runs = []
+    for run_dir in run_dirs:
+        cfg_path = run_dir / "config.json"
+
+        if not cfg_path.exists():
+            if resume_from is not None:
+                raise FileNotFoundError(cfg_path)
+
+            print(f"[ignore] No config.json: {run_dir}")
+            continue
+
+        check_config(read_json(cfg_path), cfg)
+        matching_runs.append(run_dir)
+
+    # if already finished, then skip
+    for run_dir in matching_runs:
+        if is_finished(run_dir, cfg):
+            return "skip", run_dir, None
+
+    if len(matching_runs) > 1:
+        candidates = "\n".join(str(path) for path in matching_runs)
+        raise ValueError(
+            "Multiple unfinished runs; choose resume_from manually:\n"
+            + candidates
+        )
+
+    if matching_runs:
+        run_dir = matching_runs[0]
+        checkpoint = find_checkpoint(run_dir, cfg)
+
+        if checkpoint is not None:
+            return "resume", run_dir, checkpoint
+
+        if resume_from is not None:
+            raise FileNotFoundError(
+                f"No checkpoint available for resuming: {run_dir}"
+            )
+
+        print(f"[restart] No checkpoint in {run_dir}")
+
+    return "new", None, None

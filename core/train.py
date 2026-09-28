@@ -1,4 +1,4 @@
-import json, random, dataclasses
+import os, json, random, dataclasses
 from pathlib import Path
 from tqdm import tqdm
 
@@ -9,14 +9,23 @@ import torch.nn.functional as F
 
 from .model import AdamW, TransformerLM, LRScheduler
 from .data import load_tokens, get_batch, get_random_batch, WindowSampler
-from .misc import Record, TrainerConfig, generate_timestamp
+from .misc import Record, TrainerConfig, generate_timestamp, check_config, find_checkpoint
 
 
 class Trainer:
-    def __init__(self, cfg: TrainerConfig, resume_from: str | None = None):
+    def __init__(
+        self,
+        cfg: TrainerConfig,
+        resume_from: str | None = None,
+        resume_checkpoint: str | Path | None = None,
+    ):
         self.cfg = cfg
-
         self.resume_from = resume_from
+        self.resume_checkpoint = resume_checkpoint
+
+        if resume_checkpoint is not None and resume_from is None:
+            raise ValueError(f"resume_checkpoint requires resume_from")
+
         if not resume_from:
             self.uuid = generate_timestamp()
 
@@ -146,6 +155,7 @@ class Trainer:
             raise ValueError("Checkpoint exceeds total training steps")
         if completed_step == self.cfg.num_train_steps:
             print(f"Training was already completed, step = {completed_step}")
+            self.finalize_training(completed_step)
             return False
 
         print(f"Training steps: {self.cfg.num_train_steps}, starts from step {completed_step + 1}")
@@ -182,18 +192,9 @@ class Trainer:
                     self.save_checkpoint(step)
                     self.save_checkpoint(step, "latest")
 
-            if self.training_count > 0:
-                self.record_metrics(completed_step, "train")
-                self.update_progress(progress)
-
-            if not self.check_step(completed_step, self.cfg.eval_every):
-                progress.set_description("Train / eval")
-                _, is_best = self.evaluate_step(completed_step)
-                if is_best:
-                    self.save_checkpoint(completed_step, "best")
-                progress.set_description("Train")
-
-            self.save_checkpoint(completed_step, "latest")
+            progress.set_description("Finalizing")
+            self.finalize_training(completed_step)
+            self.update_progress(progress)
             progress.refresh()
 
         return True
@@ -318,7 +319,6 @@ class Trainer:
         print(f"==================================================")
         print(f"Checking out")
         print(f"==================================================")
-        self.save_record()
         self.generate()
 
     def get_base_dir(self):
@@ -332,8 +332,11 @@ class Trainer:
     def save_config(self):
         base_dir = self.get_base_dir()
         path = base_dir / "config.json"
-        with open(path, "w") as f:
+
+        tmp_path = path.with_name(path.name + ".tmp")
+        with tmp_path.open("w", encoding="utf-9") as f:
             json.dump(dataclasses.asdict(self.cfg), f)
+        os.replace(tmp_path, path)
 
     def save_run_info(self):
         base_dir = self.get_base_dir()
@@ -347,8 +350,10 @@ class Trainer:
             }
         }
 
-        with path.open("w", encoding="utf-8") as f:
+        tmp_path =  path.with_name(path.name + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as f:
             json.dump(info, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
 
     def save_record(self):
         base_dir = self.get_base_dir()
@@ -360,10 +365,7 @@ class Trainer:
         if name is None:
             name = f"{step}"
 
-        path = base_dir / "checkpoints" / f"{name}.pt"
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        torch.save({
+        data = {
             "step": step,
             "best_step": self.best_step,
             "best_val_loss": self.best_val_loss,
@@ -380,30 +382,72 @@ class Trainer:
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "config": dataclasses.asdict(self.cfg),
-        }, path)
+        }
+
+        path = base_dir / "checkpoints" / f"{name}.pt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        tmp_path = path.with_name(path.name + ".tmp")
+        torch.save(data, tmp_path)
+        os.replace(tmp_path, path)
 
     def load_check_point(self, resume_from):
         base_dir = Path(resume_from)
 
-        path = base_dir / "checkpoints" / "latest.pt"
-        data = torch.load(
-            path,
-            map_location=self.device,
-            weights_only=True
-        )
+        if self.resume_checkpoint is not None:
+            path = Path(self.resume_checkpoint)
+        else:
+            path = find_checkpoint(base_dir, self.cfg)
+
+        if path is None:
+            raise FileNotFoundError(f"No checkpoint found in {base_dir}")
+
+        data = torch.load(path, map_location=self.device, weights_only=True)
+        check_config(data["config"], self.cfg)
+        print(f"[resume] {path}, completed step={data['step']}")
+
         self.best_step = data["best_step"]
         self.best_val_loss = data["best_val_loss"]
-
         self.training_loss = data["train_metrics"]["loss_sum"]
         self.training_correct = data["train_metrics"]["correct"]
         self.training_count = data["train_metrics"]["count"]
         self.record.train_steps = data["records"]["train"]
         self.record.eval_steps = data["records"]["eval"]
-
         self.model.load_state_dict(data["model"])
         self.optimizer.load_state_dict(data["optimizer"])
         self.sampler.load_state_dict(data["sampler"])
         return data["step"] + 1
+
+    def finalize_training(self, completed_step):
+        if completed_step != self.cfg.num_train_steps:
+            raise ValueError(f"Cannot finalize unfinished training")
+
+        if self.training_count > 0:
+            self.record_metrics(completed_step, "train")
+
+        has_final_eval = (
+            self.record.eval_steps
+            and self.record.eval_steps[-1]["step"] == completed_step
+        )
+        if not has_final_eval:
+            self.reset_metrics("eval")
+            self.evaluate_step(completed_step)
+
+        if self.best_step == completed_step:
+            self.save_checkpoint(completed_step, "best")
+
+        self.save_checkpoint(completed_step, "latest")
+        self.save_record()
+        self.save_config()
+        self.save_run_info()
+
+        path = self.get_base_dir() / "completed.json"
+        tmp_path = path.with_name(path.name + ".tmp")
+
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump({"completed_step": completed_step}, f, indent=2)
+
+        os.replace(tmp_path, path)
 
     @torch.no_grad
     def generate(self):
