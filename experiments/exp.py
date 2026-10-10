@@ -1,7 +1,7 @@
 import math
 from pathlib import Path
 
-from core.train import Trainer
+from core.training.train import Trainer
 from core.misc import *
 
 

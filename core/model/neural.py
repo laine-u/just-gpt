@@ -4,8 +4,10 @@ from einops import einsum, rearrange
 
 
 def softmax(x: torch.Tensor, dim: int = -1):
-    stable = x - x.max(dim=-1, keepdim=True).values
-    return stable.exp() / stable.exp().sum(dim=dim, keepdim=True)
+    stable = x - x.max(dim=dim, keepdim=True).values
+    numerator = stable.exp()
+    denominator = numerator.sum(dim=dim, keepdim=True)
+    return numerator / denominator
 
 
 class Linear(nn.Module):

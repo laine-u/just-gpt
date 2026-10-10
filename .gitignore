@@ -11,8 +11,8 @@ wheels/
 
 # Training artifacts
 /data/
+/results/
 runs/
-results/
 .pytest_cache/
 .vscode
 .ruff_cache

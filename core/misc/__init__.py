@@ -1,4 +1,9 @@
-from .utils import generate_timestamp
+from .utils import (
+    generate_timestamp,
+    non_neg_int,
+    positive_int,
+    positive_float
+)
 from .config import TrainerConfig
 from .record import Record
 from .runs import (
@@ -10,6 +15,9 @@ from .runs import (
 
 __all__ = [
     "generate_timestamp",
+    "non_neg_int",
+    "positive_int",
+    "positive_float",
     "TrainerConfig",
     "Record",
     "check_config",

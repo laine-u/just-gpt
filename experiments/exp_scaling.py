@@ -1,21 +1,26 @@
+import argparse
 from .exp import build_cfg, run_configs
 
 
+def build_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scale", type=str, default="small")
+    return parser
+
+
 def build_scaling_configs(
-    *,
+    token_budgets,
+    seeds,
     dataset="owt",
     data_dir="data/processed/owt-gpt2",
     batch_size=8,
     context_length=256,
 ):
     models = {
-        "S": {"num_layers": 4, "d_model": 128, "num_heads": 4, "d_ff": 384, },
+        "S": { "num_layers": 4, "d_model": 128, "num_heads": 4, "d_ff": 384, },
         "M": { "num_layers": 6, "d_model": 256, "num_heads": 8, "d_ff": 768,},
         "L": { "num_layers": 8, "d_model": 384, "num_heads": 12, "d_ff": 1152,},
     }
-
-    token_budgets = (10_000_000, 30_000_000, 100_000_000, )
-    seeds = (42, 43, 44)
 
     configs = []
 
@@ -53,8 +58,8 @@ def build_scaling_configs(
     return configs
 
 
-def run_scaling_setup():
-    configs = build_scaling_configs()
+def run_scaling_setup(token_budgets, seeds):
+    configs = build_scaling_configs(token_budgets, seeds)
 
     for cfg in configs:
         print(
@@ -67,5 +72,21 @@ def run_scaling_setup():
     run_configs(configs)
 
 
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.scale == "small":
+        token_budgets = (10_000_000, 30_000_000, 100_000_000, )
+        seeds = (42, 43, 44)
+    elif args.scale == "medium":
+        token_budgets = (1_000_000_000, 3_000_000_000, 10_000_000_000)
+        seeds = (42,)
+    else:
+        raise ValueError(f"Sorry, i don't have enough resources, but maybe you do >!")
+
+    run_scaling_setup(token_budgets, seeds)
+
+
 if __name__ == "__main__":
-    run_scaling_setup()
+    main()

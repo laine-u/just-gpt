@@ -47,12 +47,23 @@ uv run preprocessing.py \
   --split-seed 42
 ```
 
-## 2. 训练
+## 2. 预训练
 
 ```
-uv run main.py
+uv run train.py --help
 ```
 
-## 3. 实验
+### 预训练实验
 
-详见实验记录 [[experiments/README.md]]。
+```
+# 运行实验
+uv run python -m experiments.exp_scaling --scale small
+
+# 分析实验结果
+uv run analyze.py --input results --output output
+```
+
+实验记录详见 [[experiments/README.md]]。
+
+## 3. 推理
+

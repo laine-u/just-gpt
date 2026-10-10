@@ -7,9 +7,9 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 
-from .model import AdamW, TransformerLM, LRScheduler
-from .data import load_tokens, get_batch, get_random_batch, WindowSampler
-from .misc import Record, TrainerConfig, generate_timestamp, check_config, find_checkpoint
+from ..model import AdamW, TransformerLM, LRScheduler
+from ..data import load_tokens, get_batch, get_random_batch, WindowSampler
+from ..misc import Record, TrainerConfig, generate_timestamp, check_config, find_checkpoint
 
 
 class Trainer:
@@ -334,7 +334,7 @@ class Trainer:
         path = base_dir / "config.json"
 
         tmp_path = path.with_name(path.name + ".tmp")
-        with tmp_path.open("w", encoding="utf-9") as f:
+        with tmp_path.open("w", encoding="utf-8") as f:
             json.dump(dataclasses.asdict(self.cfg), f)
         os.replace(tmp_path, path)
 

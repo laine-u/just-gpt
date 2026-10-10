@@ -16,7 +16,6 @@ def positive_int(value: str) -> int:
 
     if number <= 0:
         raise argparse.ArgumentTypeError(f"Value must be positive")
-
     return number
 
 def positive_float(value: str) -> float:
@@ -27,5 +26,14 @@ def positive_float(value: str) -> float:
 
     if number <= 0:
         raise argparse.ArgumentTypeError(f"Value must be positive")
+    return number
 
+def non_neg_int(value: str):
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("Expect an integer") from None
+
+    if number < 0:
+        raise argparse.ArgumentTypeError("Value must be non-negative")
     return number

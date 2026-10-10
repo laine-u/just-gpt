@@ -1,0 +1,62 @@
+[
+  {
+    "id": "story_01",
+    "category": "story",
+    "prompt": "Once upon a time, in a small village near the sea,"
+  },
+  {
+    "id": "story_02",
+    "category": "story",
+    "prompt": "When Emma opened the old wooden box, she found"
+  },
+  {
+    "id": "story_03",
+    "category": "story",
+    "prompt": "The last train had already left, and Daniel was still"
+  },
+  {
+    "id": "explanation_01",
+    "category": "explanation",
+    "prompt": "Plants need sunlight because"
+  },
+  {
+    "id": "explanation_02",
+    "category": "explanation",
+    "prompt": "A computer program is a set of instructions that"
+  },
+  {
+    "id": "explanation_03",
+    "category": "explanation",
+    "prompt": "The main difference between weather and climate is"
+  },
+  {
+    "id": "article_01",
+    "category": "article",
+    "prompt": "Learning a new language takes time and practice. One useful approach is"
+  },
+  {
+    "id": "article_02",
+    "category": "article",
+    "prompt": "Public libraries provide more than books. They also"
+  },
+  {
+    "id": "list_01",
+    "category": "list",
+    "prompt": "Before leaving for a hiking trip, remember to bring:\n1."
+  },
+  {
+    "id": "dialogue_01",
+    "category": "dialogue",
+    "prompt": "\"Why did you come back?\" she asked.\n\""
+  },
+  {
+    "id": "reference_01",
+    "category": "context",
+    "prompt": "Alice put the red notebook on the desk and the blue notebook in her bag. Later, she opened her bag and took out"
+  },
+  {
+    "id": "repetition_01",
+    "category": "repetition",
+    "prompt": "I enjoy playing games with my friends. Last weekend,"
+  }
+]
